@@ -15,17 +15,42 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 router.post("/upload", upload.single('product'), (req, res) => {
+    // Uses BACKEND_URL in production, falls back to localhost in development
+    const baseUrl = process.env.BACKEND_URL || `http://localhost:${process.env.PORT || 4000}`;
     res.json({
         success: 1,
-        image_url: `http://localhost:${process.env.PORT}/images/${req.file.filename}`
+        image_url: `${baseUrl}/images/${req.file.filename}`
     })
 })
+
+// ONE-TIME FIX: updates all localhost image URLs to the Render URL
+// Visit https://sykshades-backend.onrender.com/fix-image-urls once, then remove this route
+router.get('/fix-image-urls', async (req, res) => {
+  try {
+    const products = await Product.find({ image: { $regex: 'localhost' } });
+    
+    let updatedCount = 0;
+    for (let product of products) {
+      product.image = product.image.replace(
+        /http:\/\/localhost:\d+/,
+        'https://sykshades-backend.onrender.com'
+      );
+      await product.save();
+      updatedCount++;
+    }
+
+    res.json({ 
+      success: true, 
+      message: `Fixed ${updatedCount} products` 
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 router.post('/addproduct', async (req, res) => {
     try {
         const products = await Product.find({});
-
-        // Use Math.max across ALL existing ids — safe even after deletions
         const id = products.length > 0
             ? Math.max(...products.map(p => p.id)) + 1
             : 1;
