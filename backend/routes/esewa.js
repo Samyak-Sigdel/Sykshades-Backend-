@@ -7,6 +7,11 @@ const ESEWA_PRODUCT_CODE = 'INTENT';
 const ESEWA_BOOK_URL = 'https://rc-checkout.esewa.com.np/api/client/intent/payment/book';
 const ESEWA_STATUS_URL = 'https://rc-checkout.esewa.com.np/api/client/intent/payment/status';
 
+// Server-side source of truth for promo codes: code -> discount percent
+const VALID_PROMO_CODES = {
+    '1122': 10,
+};
+
 const generateSignature = (message) => {
     const hmac = crypto.createHmac('sha256', ESEWA_ACCESS_KEY);
     hmac.update(message);
@@ -15,15 +20,31 @@ const generateSignature = (message) => {
 
 router.post('/initiate', async (req, res) => {
     try {
-        const { amount, orderId, customerName } = req.body;
+        const { subtotal, promoCode, orderId, customerName } = req.body;
 
-        if (!amount || !orderId) {
-            return res.status(400).json({ success: false, message: 'Amount and orderId are required' });
+        if (!subtotal || !orderId) {
+            return res.status(400).json({ success: false, message: 'Subtotal and orderId are required' });
         }
 
-        const parsedAmount = parseFloat(amount);
+        const parsedSubtotal = parseFloat(subtotal);
+
+        if (isNaN(parsedSubtotal) || parsedSubtotal <= 0) {
+            return res.status(400).json({ success: false, message: 'Invalid subtotal' });
+        }
+
+        // Re-validate promo code server-side — never trust a discount % sent from the client
+        let discountPercent = 0;
+        if (promoCode && VALID_PROMO_CODES[promoCode]) {
+            discountPercent = VALID_PROMO_CODES[promoCode];
+        }
+
+        const discountAmount = parsedSubtotal * (discountPercent / 100);
+        const taxableAmount = parsedSubtotal - discountAmount;
+        const tax = taxableAmount * 0.10;
+        const finalAmount = parseFloat((taxableAmount + tax).toFixed(2));
+
         const transaction_uuid = `txn-${orderId}-${Date.now()}`;
-        const message = `product_code=${ESEWA_PRODUCT_CODE},amount=${parsedAmount},transaction_uuid=${transaction_uuid}`;
+        const message = `product_code=${ESEWA_PRODUCT_CODE},amount=${finalAmount},transaction_uuid=${transaction_uuid}`;
         const signature = generateSignature(message);
 
         const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
@@ -31,7 +52,7 @@ router.post('/initiate', async (req, res) => {
 
         const payload = {
             product_code: ESEWA_PRODUCT_CODE,
-            amount: parsedAmount,
+            amount: finalAmount,
             transaction_uuid,
             signed_field_names: 'product_code,amount,transaction_uuid',
             signature,
@@ -67,6 +88,7 @@ router.post('/initiate', async (req, res) => {
                 booking_id: data.data?.booking_id || data.booking_id,
                 correlation_id: data.data?.correlation_id || data.correlation_id,
                 transaction_uuid,
+                amount: finalAmount,
                 message: data.message,
             });
         } else {
